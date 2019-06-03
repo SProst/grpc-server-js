@@ -1,6 +1,7 @@
 'use strict';
 const Assert = require('assert');
 const Fs = require('fs');
+const Http2 = require('http2');
 const Path = require('path');
 const Barrier = require('cb-barrier');
 const Lab = require('@hapi/lab');
@@ -294,6 +295,21 @@ describe('Server', () => {
     });
   });
 
+  describe('Server.prototype.tryShutdown', () => {
+    it('calls back with an error if the server is not bound', () => {
+      const barrier = new Barrier();
+      const server = new Server();
+
+      server.tryShutdown((err) => {
+        Assert(err);
+        Assert.strictEqual(err.message, 'server is not running');
+        barrier.pass();
+      });
+
+      return barrier;
+    });
+  });
+
   describe('Echo service', () => {
     let server;
     let client;
@@ -407,5 +423,78 @@ describe('Server', () => {
     Assert.throws(() => {
       server.addHttp2Port();
     }, /not implemented/);
+  });
+
+  it('responds with HTTP status of 415 on invalid content-type', async () => {
+    const barrier = new Barrier();
+    const server = new Server();
+    const port = await server.bind('localhost:0', serverInsecureCreds);
+    const client = Http2.connect(`http://localhost:${port}`);
+    let statusCode;
+    let count = 0;
+
+    server.start();
+
+    function makeRequest (headers) {
+      const req = client.request(headers);
+
+      req.on('response', (headers) => {
+        statusCode = headers[Http2.constants.HTTP2_HEADER_STATUS];
+      });
+
+      req.on('end', () => {
+        Assert.strictEqual(statusCode, Http2.constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE);
+        count++;
+        if (count === 2) {
+          server.tryShutdown();
+          barrier.pass();
+        }
+      });
+
+      req.end();
+    }
+
+    // Missing Content-Type header.
+    makeRequest({ ':path': '/' });
+    // Invalid Content-Type header.
+    makeRequest({ ':path': '/', 'content-type': 'application/not-grpc' });
+    return barrier;
+  });
+
+  it('rejects connections if the server is bound but not started', async () => {
+    const barrier = new Barrier();
+    const server = new Server();
+    const port = await server.bind('localhost:0', serverInsecureCreds);
+    const protoFile = Path.join(__dirname, 'proto', 'echo_service.proto');
+    const { EchoService } = loadProtoFile(protoFile);
+    const client = new EchoService(`localhost:${port}`, clientInsecureCreds);
+
+    client.echo({ value: 'test value', value2: 3 }, (error, response) => {
+      Assert.strictEqual(error.code, Grpc.status.INTERNAL);
+      Assert.strictEqual(response, undefined);
+      server.tryShutdown();
+      barrier.pass();
+    });
+
+    return barrier;
+  });
+
+  it('returns UNIMPLEMENTED on 404', async () => {
+    const barrier = new Barrier();
+    const server = new Server();
+    const port = await server.bind('localhost:0', serverInsecureCreds);
+    const protoFile = Path.join(__dirname, 'proto', 'echo_service.proto');
+    const { EchoService } = loadProtoFile(protoFile);
+    const client = new EchoService(`localhost:${port}`, clientInsecureCreds);
+
+    server.start();
+    client.echo({ value: 'test value', value2: 3 }, (error, response) => {
+      Assert.strictEqual(error.code, Grpc.status.UNIMPLEMENTED);
+      Assert.strictEqual(response, undefined);
+      server.tryShutdown();
+      barrier.pass();
+    });
+
+    return barrier;
   });
 });
