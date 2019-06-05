@@ -27,8 +27,22 @@ describe('Server', () => {
     });
 
     it('should work with an empty object argument', () => {
+      const options = {};
+
       Assert.doesNotThrow(() => {
-        new Server({}); // eslint-disable-line no-new
+        new Server(options); // eslint-disable-line no-new
+      });
+
+      // The constructor applies default values. Verify that the user's
+      // options are not overwritten.
+      Assert.deepStrictEqual(options, {});
+    });
+
+    it('throws if arguments are the wrong type', () => {
+      [null, 'foo', 5].forEach((value) => {
+        Assert.throws(() => {
+          new Server(value); // eslint-disable-line no-new
+        }, /TypeError: options must be an object/);
       });
     });
 
@@ -430,13 +444,13 @@ describe('Server', () => {
     const server = new Server();
     const port = await server.bind('localhost:0', serverInsecureCreds);
     const client = Http2.connect(`http://localhost:${port}`);
-    let statusCode;
     let count = 0;
 
     server.start();
 
     function makeRequest (headers) {
       const req = client.request(headers);
+      let statusCode;
 
       req.on('response', (headers) => {
         statusCode = headers[Http2.constants.HTTP2_HEADER_STATUS];
@@ -446,6 +460,7 @@ describe('Server', () => {
         Assert.strictEqual(statusCode, Http2.constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE);
         count++;
         if (count === 2) {
+          client.close();
           server.tryShutdown();
           barrier.pass();
         }
@@ -472,6 +487,7 @@ describe('Server', () => {
     client.echo({ value: 'test value', value2: 3 }, (error, response) => {
       Assert.strictEqual(error.code, Grpc.status.INTERNAL);
       Assert.strictEqual(response, undefined);
+      client.close();
       server.tryShutdown();
       barrier.pass();
     });
@@ -491,6 +507,7 @@ describe('Server', () => {
     client.echo({ value: 'test value', value2: 3 }, (error, response) => {
       Assert.strictEqual(error.code, Grpc.status.UNIMPLEMENTED);
       Assert.strictEqual(response, undefined);
+      client.close();
       server.tryShutdown();
       barrier.pass();
     });
